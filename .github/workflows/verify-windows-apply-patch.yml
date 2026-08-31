@@ -1,6 +1,11 @@
 name: Verify Windows apply_patch artifact
 
 on:
+  workflow_run:
+    workflows:
+      - Build Windows apply_patch artifact
+    types:
+      - completed
   workflow_dispatch:
     inputs:
       build_run_id:
@@ -14,8 +19,11 @@ permissions:
 
 jobs:
   verify:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: windows-2025
     timeout-minutes: 20
+    env:
+      BUILD_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.build_run_id || github.event.workflow_run.id }}
 
     steps:
       - name: Download reusable binaries
@@ -24,13 +32,11 @@ jobs:
           name: windows-apply-patch-bin
           path: ${{ runner.temp }}/windows-apply-patch-bin
           repository: hirsaeki/codex-bench
-          run-id: ${{ inputs.build_run_id }}
+          run-id: ${{ env.BUILD_RUN_ID }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Validate artifact provenance
         shell: pwsh
-        env:
-          BUILD_RUN_ID: ${{ inputs.build_run_id }}
         run: |
           $ErrorActionPreference = 'Stop'
           $binDir = Join-Path $env:RUNNER_TEMP 'windows-apply-patch-bin'
@@ -76,8 +82,6 @@ jobs:
         id: harness
         continue-on-error: true
         shell: pwsh
-        env:
-          BUILD_RUN_ID: ${{ inputs.build_run_id }}
         run: |
           $ErrorActionPreference = 'Stop'
           $binDir = Join-Path $env:RUNNER_TEMP 'windows-apply-patch-bin'
@@ -129,7 +133,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: windows-apply-patch-result-${{ inputs.build_run_id }}-${{ github.run_id }}
+          name: windows-apply-patch-result-${{ env.BUILD_RUN_ID }}-${{ github.run_id }}
           path: ${{ runner.temp }}/windows-apply-patch-result
           if-no-files-found: warn
           retention-days: 14
