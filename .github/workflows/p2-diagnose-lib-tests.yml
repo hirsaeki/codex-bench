@@ -1,0 +1,59 @@
+name: Diagnose P2 Windows sandbox library tests
+
+on:
+  push:
+    branches:
+      - measure/p2-diagnose
+    paths:
+      - .github/workflows/p2-diagnose-lib-tests.yml
+
+permissions:
+  contents: write
+
+jobs:
+  diagnose:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - name: Check out bench branch
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Check out P2 candidate
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: hirsaeki/codex
+          ref: 433886d5aa93f2aee465857231c6cecf39670eda
+          path: codex
+          persist-credentials: false
+
+      - name: Set up Codex CI environment
+        uses: ./codex/.github/actions/setup-ci
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+
+      - name: Run library tests and capture output
+        shell: pwsh
+        working-directory: codex/codex-rs
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $out = Join-Path $env:GITHUB_WORKSPACE 'diagnostic.txt'
+          cargo test -p codex-windows-sandbox --lib -- --nocapture *>&1 | Tee-Object -FilePath $out
+          $exit = $LASTEXITCODE
+          "EXIT_CODE=$exit" | Add-Content -Encoding utf8 $out
+          exit 0
+
+      - name: Commit diagnostic output
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add diagnostic.txt
+          git diff --cached --quiet
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host 'No diagnostic changes to commit.'
+            exit 0
+          }
+          git commit -m 'Capture P2 Windows library test diagnostic'
+          git push
