@@ -91,7 +91,7 @@ jobs:
           [[ "$target" == 'x86_64-pc-windows-msvc' ]] || { echo "unexpected target: $target" >&2; exit 1; }
           [[ "$signed" == 'false' ]] || { echo 'v1 fork release must be explicitly marked unsigned' >&2; exit 1; }
 
-          (cd "$dist" && sha256sum --check SHA256SUMS)
+          (cd "$dist" && tr -d '\r' < SHA256SUMS | sha256sum --check -)
           actual_package_sha="$(sha256sum "${dist}/${package_file}" | awk '{print $1}')"
           [[ "$actual_package_sha" == "$package_sha" ]] || { echo 'package hash does not match provenance' >&2; exit 1; }
 
