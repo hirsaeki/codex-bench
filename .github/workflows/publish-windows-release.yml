@@ -51,14 +51,22 @@ jobs:
         run: |
           set -euo pipefail
           marker_name="windows-release-verified-${BUILD_RUN_ID}"
-          marker_count="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${marker_name}&per_page=100" \
-            --jq '[.artifacts[] | select(.expired == false)] | length')"
-          if [[ "$marker_count" -lt 1 ]]; then
+          marker_json="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${marker_name}&per_page=100")"
+          verify_run_id="$(jq -r '[.artifacts[] | select(.expired == false)] | sort_by(.created_at) | last | .workflow_run.id // empty' <<<"$marker_json")"
+          if [[ -z "$verify_run_id" ]]; then
             echo "No non-expired verification marker exists for build run ${BUILD_RUN_ID}." >&2
             echo "Run Verify Windows release artifact successfully before publishing." >&2
             exit 1
           fi
-          echo "Found ${marker_count} verification marker artifact(s) for build run ${BUILD_RUN_ID}."
+
+          verify_conclusion="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${verify_run_id}" --jq '.conclusion // empty')"
+          if [[ "$verify_conclusion" != 'success' ]]; then
+            echo "Verification marker came from run ${verify_run_id}, which concluded ${verify_conclusion:-unknown}." >&2
+            exit 1
+          fi
+
+          echo "VERIFY_RUN_ID=$verify_run_id" >> "$GITHUB_ENV"
+          echo "Verified by successful run ${verify_run_id}."
 
       - name: Revalidate release provenance and hashes
         id: provenance
@@ -119,6 +127,7 @@ jobs:
           - Target: \`x86_64-pc-windows-msvc\`
           - Source: https://github.com/hirsaeki/codex/commit/${SOURCE_SHA}
           - Build run: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${BUILD_RUN_ID}
+          - Verify run: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${VERIFY_RUN_ID}
           - Package SHA-256: \`${PACKAGE_SHA256}\`
 
           **Important:** this is an unsigned fork build. Windows SmartScreen or other security tooling may warn because it is not signed with OpenAI's production signing certificate. Verify \`SHA256SUMS\` before use.
