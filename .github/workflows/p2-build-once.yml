@@ -1,9 +1,7 @@
 name: P2 Windows apply_patch build once
 
 on:
-  push:
-    branches:
-      - measure/p2-refresh-in-process
+  workflow_dispatch:
 
 permissions:
   contents: read
