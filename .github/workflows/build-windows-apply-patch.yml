@@ -1,11 +1,6 @@
 name: Build Windows apply_patch artifact
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - .github/workflows/build-windows-apply-patch.yml
   workflow_dispatch:
     inputs:
       revision:
@@ -30,7 +25,7 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: hirsaeki/codex
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.revision || 'fix/windows-apply-patch-baseline-user-home' }}
+          ref: ${{ inputs.revision }}
           persist-credentials: false
 
       - name: Set up Codex CI environment
@@ -43,7 +38,7 @@ jobs:
         id: source
         shell: pwsh
         env:
-          SOURCE_REVISION_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.revision || 'fix/windows-apply-patch-baseline-user-home' }}
+          SOURCE_REVISION_INPUT: ${{ inputs.revision }}
         run: |
           $ErrorActionPreference = 'Stop'
           $sha = (git rev-parse HEAD).Trim()
@@ -61,7 +56,7 @@ jobs:
       - name: Stage reusable artifact
         shell: pwsh
         env:
-          SOURCE_REVISION_INPUT: ${{ github.event_name == 'workflow_dispatch' && inputs.revision || 'fix/windows-apply-patch-baseline-user-home' }}
+          SOURCE_REVISION_INPUT: ${{ inputs.revision }}
           SOURCE_SHA: ${{ steps.source.outputs.sha }}
         run: |
           $ErrorActionPreference = 'Stop'
