@@ -1,0 +1,148 @@
+name: Publish Windows release
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: Verified Build Windows release artifact run ID
+        required: true
+        type: string
+      release_tag:
+        description: Release tag, for example windows-v0.151.0-fork.1
+        required: true
+        type: string
+      release_name:
+        description: Optional release display name
+        required: false
+        type: string
+      prerelease:
+        description: Publish as a prerelease
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      BUILD_RUN_ID: ${{ inputs.build_run_id }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      RELEASE_NAME_INPUT: ${{ inputs.release_name }}
+      PRERELEASE: ${{ inputs.prerelease }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Download verified build artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: windows-release-package
+          path: ${{ runner.temp }}/windows-release
+          repository: hirsaeki/codex-bench
+          run-id: ${{ env.BUILD_RUN_ID }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Require successful release verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          marker_name="windows-release-verified-${BUILD_RUN_ID}"
+          marker_json="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=${marker_name}&per_page=100")"
+          verify_run_id="$(jq -r '[.artifacts[] | select(.expired == false)] | sort_by(.created_at) | last | .workflow_run.id // empty' <<<"$marker_json")"
+          if [[ -z "$verify_run_id" ]]; then
+            echo "No non-expired verification marker exists for build run ${BUILD_RUN_ID}." >&2
+            echo "Run Verify Windows release artifact successfully before publishing." >&2
+            exit 1
+          fi
+
+          verify_conclusion="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/runs/${verify_run_id}" --jq '.conclusion // empty')"
+          if [[ "$verify_conclusion" != 'success' ]]; then
+            echo "Verification marker came from run ${verify_run_id}, which concluded ${verify_conclusion:-unknown}." >&2
+            exit 1
+          fi
+
+          echo "VERIFY_RUN_ID=$verify_run_id" >> "$GITHUB_ENV"
+          echo "Verified by successful run ${verify_run_id}."
+
+      - name: Revalidate release provenance and hashes
+        id: provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          dist="${RUNNER_TEMP}/windows-release"
+          provenance="${dist}/release-provenance.json"
+          [[ -f "$provenance" ]] || { echo 'release-provenance.json is missing' >&2; exit 1; }
+
+          source_repo="$(jq -r '.source_repository' "$provenance")"
+          source_sha="$(jq -r '.source_sha' "$provenance")"
+          codex_version="$(jq -r '.codex_version' "$provenance")"
+          build_run_id="$(jq -r '.build_run_id|tostring' "$provenance")"
+          target="$(jq -r '.target' "$provenance")"
+          signed="$(jq -r '.signed|tostring' "$provenance")"
+          package_file="$(jq -r '.package.file' "$provenance")"
+          package_sha="$(jq -r '.package.sha256' "$provenance")"
+
+          [[ "$source_repo" == 'hirsaeki/codex' ]] || { echo "unexpected source repository: $source_repo" >&2; exit 1; }
+          [[ "$build_run_id" == "$BUILD_RUN_ID" ]] || { echo "build run mismatch: $build_run_id" >&2; exit 1; }
+          [[ "$target" == 'x86_64-pc-windows-msvc' ]] || { echo "unexpected target: $target" >&2; exit 1; }
+          [[ "$signed" == 'false' ]] || { echo 'v1 fork release must be explicitly marked unsigned' >&2; exit 1; }
+
+          (cd "$dist" && tr -d '\r' < SHA256SUMS | sha256sum --check -)
+          actual_package_sha="$(sha256sum "${dist}/${package_file}" | awk '{print $1}')"
+          [[ "$actual_package_sha" == "$package_sha" ]] || { echo 'package hash does not match provenance' >&2; exit 1; }
+
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "codex_version=$codex_version" >> "$GITHUB_OUTPUT"
+          echo "package_file=$package_file" >> "$GITHUB_OUTPUT"
+          echo "package_sha256=$package_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub Release
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.provenance.outputs.source_sha }}
+          CODEX_VERSION: ${{ steps.provenance.outputs.codex_version }}
+          PACKAGE_FILE: ${{ steps.provenance.outputs.package_file }}
+          PACKAGE_SHA256: ${{ steps.provenance.outputs.package_sha256 }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release tag already exists: $RELEASE_TAG" >&2
+            exit 1
+          fi
+
+          release_name="$RELEASE_NAME_INPUT"
+          if [[ -z "$release_name" ]]; then
+            release_name="Codex Windows ${CODEX_VERSION} fork build"
+          fi
+
+          notes="${RUNNER_TEMP}/release-notes.md"
+          cat > "$notes" <<EOF
+          Windows x64 build of \`hirsaeki/codex\` from source commit \`${SOURCE_SHA}\`.
+
+          - Codex version: \`${CODEX_VERSION}\`
+          - Target: \`x86_64-pc-windows-msvc\`
+          - Source: https://github.com/hirsaeki/codex/commit/${SOURCE_SHA}
+          - Build run: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${BUILD_RUN_ID}
+          - Verify run: https://github.com/${GITHUB_REPOSITORY}/actions/runs/${VERIFY_RUN_ID}
+          - Package SHA-256: \`${PACKAGE_SHA256}\`
+
+          **Important:** this is an unsigned fork build. Windows SmartScreen or other security tooling may warn because it is not signed with OpenAI's production signing certificate. Verify \`SHA256SUMS\` before use.
+          EOF
+
+          args=(
+            "$RELEASE_TAG"
+            "${RUNNER_TEMP}/windows-release/${PACKAGE_FILE}"
+            "${RUNNER_TEMP}/windows-release/SHA256SUMS"
+            "${RUNNER_TEMP}/windows-release/release-provenance.json"
+            --title "$release_name"
+            --notes-file "$notes"
+            --target "$GITHUB_SHA"
+          )
+          if [[ "$PRERELEASE" == 'true' ]]; then
+            args+=(--prerelease)
+          fi
+          gh release create "${args[@]}"
