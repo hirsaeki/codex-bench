@@ -36,7 +36,9 @@ The artifact is scoped to that workflow run, so its name can stay constant.
 
 ### Verify Windows apply_patch artifact
 
-Run `Verify Windows apply_patch artifact` with only the successful build workflow's `build_run_id`.
+A successful build automatically triggers `Verify Windows apply_patch artifact` for that exact build run.
+
+The same verify workflow can also be dispatched manually with a previous successful `build_run_id`. This is the normal path for re-running verification after changing only workflow, harness-driving, environment-setup, or result-collection logic.
 
 The verify job:
 
