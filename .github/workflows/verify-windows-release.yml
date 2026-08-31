@@ -1,0 +1,174 @@
+name: Verify Windows release artifact
+
+on:
+  workflow_run:
+    workflows:
+      - Build Windows release artifact
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: Successful Build Windows release artifact run ID
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  verify:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: windows-2025
+    timeout-minutes: 20
+    env:
+      BUILD_RUN_ID: ${{ github.event_name == 'workflow_dispatch' && inputs.build_run_id || github.event.workflow_run.id }}
+
+    steps:
+      - name: Download reusable Windows release artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: windows-release-package
+          path: ${{ runner.temp }}/windows-release
+          repository: hirsaeki/codex-bench
+          run-id: ${{ env.BUILD_RUN_ID }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Validate package provenance and hashes
+        id: provenance
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dist = Join-Path $env:RUNNER_TEMP 'windows-release'
+          $provenancePath = Join-Path $dist 'release-provenance.json'
+          if (-not (Test-Path $provenancePath)) {
+            throw 'release-provenance.json is missing'
+          }
+
+          $provenance = Get-Content $provenancePath -Raw | ConvertFrom-Json
+          if ($provenance.source_repository -ne 'hirsaeki/codex') {
+            throw "unexpected source repository: $($provenance.source_repository)"
+          }
+          if ([string]$provenance.build_run_id -ne $env:BUILD_RUN_ID) {
+            throw "artifact build run $($provenance.build_run_id) did not match requested run $env:BUILD_RUN_ID"
+          }
+          if ($provenance.target -ne 'x86_64-pc-windows-msvc') {
+            throw "unexpected target: $($provenance.target)"
+          }
+          if ($provenance.signed -ne $false) {
+            throw 'v1 fork release is expected to be explicitly marked unsigned'
+          }
+
+          $zipPath = Join-Path $dist $provenance.package.file
+          if (-not (Test-Path $zipPath)) {
+            throw "release package is missing: $($provenance.package.file)"
+          }
+          $actualPackageHash = (Get-FileHash -Algorithm SHA256 $zipPath).Hash.ToLowerInvariant()
+          if ($actualPackageHash -ne [string]$provenance.package.sha256) {
+            throw "package SHA-256 mismatch: expected $($provenance.package.sha256), got $actualPackageHash"
+          }
+
+          $sums = Get-Content (Join-Path $dist 'SHA256SUMS')
+          foreach ($line in $sums) {
+            if ($line -notmatch '^(?<hash>[0-9a-fA-F]{64})  (?<file>.+)$') {
+              throw "invalid SHA256SUMS line: $line"
+            }
+            $path = Join-Path $dist $Matches.file
+            if (-not (Test-Path $path)) {
+              throw "SHA256SUMS references missing file: $($Matches.file)"
+            }
+            $actual = (Get-FileHash -Algorithm SHA256 $path).Hash.ToLowerInvariant()
+            if ($actual -ne $Matches.hash.ToLowerInvariant()) {
+              throw "SHA-256 mismatch for $($Matches.file)"
+            }
+          }
+
+          "source_sha=$($provenance.source_sha)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "codex_version=$($provenance.codex_version)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "package_file=$($provenance.package.file)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "package_sha256=$actualPackageHash" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Validate canonical package layout
+        shell: pwsh
+        env:
+          PACKAGE_FILE: ${{ steps.provenance.outputs.package_file }}
+          CODEX_VERSION: ${{ steps.provenance.outputs.codex_version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dist = Join-Path $env:RUNNER_TEMP 'windows-release'
+          $packageDir = Join-Path $env:RUNNER_TEMP 'codex-package'
+          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $packageDir
+          Expand-Archive -Path (Join-Path $dist $env:PACKAGE_FILE) -DestinationPath $packageDir
+
+          $metadataPath = Join-Path $packageDir 'codex-package.json'
+          if (-not (Test-Path $metadataPath)) {
+            throw 'codex-package.json is missing from release package'
+          }
+          $metadata = Get-Content $metadataPath -Raw | ConvertFrom-Json
+          if ($metadata.target -ne 'x86_64-pc-windows-msvc') {
+            throw "package target mismatch: $($metadata.target)"
+          }
+          if ($metadata.version -ne $env:CODEX_VERSION) {
+            throw "package version mismatch: $($metadata.version)"
+          }
+
+          foreach ($relative in @(
+            'bin/codex.exe',
+            'bin/codex-code-mode-host.exe',
+            'codex-resources/codex-command-runner.exe',
+            'codex-resources/codex-windows-sandbox-setup.exe',
+            'codex-path/rg.exe'
+          )) {
+            if (-not (Test-Path (Join-Path $packageDir $relative))) {
+              throw "canonical package file is missing: $relative"
+            }
+          }
+
+      - name: Smoke test packaged Codex
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $packageDir = Join-Path $env:RUNNER_TEMP 'codex-package'
+          $codex = Join-Path $packageDir 'bin/codex.exe'
+          $codexHome = Join-Path $env:RUNNER_TEMP 'codex-release-smoke-home'
+          New-Item -ItemType Directory -Force -Path $codexHome | Out-Null
+          $env:CODEX_HOME = $codexHome
+          $env:PATH = "$(Join-Path $packageDir 'codex-path');$env:PATH"
+
+          & $codex --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "packaged codex --version failed with exit code $LASTEXITCODE"
+          }
+          & $codex --help | Out-Null
+          if ($LASTEXITCODE -ne 0) {
+            throw "packaged codex --help failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Write verified marker
+        shell: pwsh
+        env:
+          SOURCE_SHA: ${{ steps.provenance.outputs.source_sha }}
+          CODEX_VERSION: ${{ steps.provenance.outputs.codex_version }}
+          PACKAGE_SHA256: ${{ steps.provenance.outputs.package_sha256 }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $verifiedDir = Join-Path $env:RUNNER_TEMP 'windows-release-verified'
+          New-Item -ItemType Directory -Force -Path $verifiedDir | Out-Null
+          [ordered]@{
+            schema_version = 1
+            build_run_id = $env:BUILD_RUN_ID
+            verify_run_id = $env:GITHUB_RUN_ID
+            verify_run_attempt = $env:GITHUB_RUN_ATTEMPT
+            source_sha = $env:SOURCE_SHA
+            codex_version = $env:CODEX_VERSION
+            package_sha256 = $env:PACKAGE_SHA256
+          } | ConvertTo-Json -Depth 4 | Set-Content -Encoding utf8 (Join-Path $verifiedDir 'verified.json')
+
+      - name: Upload verified marker
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-release-verified-${{ env.BUILD_RUN_ID }}
+          path: ${{ runner.temp }}/windows-release-verified
+          if-no-files-found: error
+          retention-days: 14
