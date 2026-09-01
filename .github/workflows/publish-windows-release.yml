@@ -35,6 +35,7 @@ jobs:
       RELEASE_NAME_INPUT: ${{ inputs.release_name }}
       PRERELEASE: ${{ inputs.prerelease }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
 
     steps:
       - name: Download verified build artifact
