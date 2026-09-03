@@ -15,6 +15,7 @@ on:
         type: string
 
 permissions:
+  actions: write
   contents: read
 
 jobs:
@@ -116,3 +117,15 @@ jobs:
           path: ${{ runner.temp }}/windows-apply-patch-bin
           if-no-files-found: error
           retention-days: 14
+
+      - name: Dispatch verification for issue request
+        if: ${{ inputs.trigger_issue_number != '' }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh workflow run verify-windows-apply-patch.yml --ref main -f build_run_id="$env:GITHUB_RUN_ID"
+          if ($LASTEXITCODE -ne 0) {
+            throw "failed to dispatch apply_patch verification for build run $env:GITHUB_RUN_ID"
+          }
