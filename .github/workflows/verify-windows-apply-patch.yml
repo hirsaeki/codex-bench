@@ -16,6 +16,7 @@ on:
 permissions:
   actions: read
   contents: read
+  issues: write
 
 jobs:
   verify:
@@ -65,6 +66,7 @@ jobs:
           }
 
           "SOURCE_SHA=$($provenance.source_sha)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TRIGGER_ISSUE_NUMBER=$([string]$provenance.trigger_issue_number)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           Write-Host "Using build run $env:BUILD_RUN_ID for source $($provenance.source_sha)"
 
       - name: Prepare measurement environment
@@ -142,3 +144,17 @@ jobs:
         if: always() && steps.harness.outcome != 'success'
         shell: pwsh
         run: throw 'compiled Windows apply_patch harness failed; inspect the uploaded result artifact'
+
+      - name: Close trigger issue
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const issueNumber = Number(process.env.TRIGGER_ISSUE_NUMBER || 0);
+            if (!issueNumber) return;
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              state: 'closed',
+              state_reason: 'completed',
+            });

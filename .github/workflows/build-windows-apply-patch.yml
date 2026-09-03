@@ -8,6 +8,11 @@ on:
         required: true
         default: main
         type: string
+      trigger_issue_number:
+        description: Optional codex-bench issue number to close after successful verification
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
@@ -58,6 +63,7 @@ jobs:
         env:
           SOURCE_REVISION_INPUT: ${{ inputs.revision }}
           SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          TRIGGER_ISSUE_NUMBER: ${{ inputs.trigger_issue_number }}
         run: |
           $ErrorActionPreference = 'Stop'
           $metadata = cargo metadata --format-version 1 --no-deps | ConvertFrom-Json
@@ -91,6 +97,7 @@ jobs:
             source_repository = 'hirsaeki/codex'
             source_revision_input = $env:SOURCE_REVISION_INPUT
             source_sha = $env:SOURCE_SHA
+            trigger_issue_number = $env:TRIGGER_ISSUE_NUMBER
             build_run_id = $env:GITHUB_RUN_ID
             build_run_attempt = $env:GITHUB_RUN_ATTEMPT
             runner_os = $env:RUNNER_OS

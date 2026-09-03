@@ -1,0 +1,67 @@
+name: Dispatch Windows bench request
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    if: >-
+      github.event.issue.user.login == github.repository_owner &&
+      (
+        startsWith(github.event.issue.title, '[windows-apply-patch]') ||
+        startsWith(github.event.issue.title, '[windows-release]')
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Select workflow and revision
+        id: select
+        shell: bash
+        env:
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+        run: |
+          set -euo pipefail
+
+          case "$ISSUE_TITLE" in
+            '[windows-apply-patch]'*)
+              prefix='[windows-apply-patch]'
+              workflow='build-windows-apply-patch.yml'
+              ;;
+            '[windows-release]'*)
+              prefix='[windows-release]'
+              workflow='build-windows-release.yml'
+              ;;
+            *)
+              echo 'Unsupported issue prefix.' >&2
+              exit 1
+              ;;
+          esac
+
+          revision="${ISSUE_TITLE#"$prefix"}"
+          revision="$(printf '%s' "$revision" | xargs)"
+          if [[ -z "$revision" ]]; then
+            revision='main'
+          fi
+
+          echo "workflow=$workflow" >> "$GITHUB_OUTPUT"
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+
+      - name: Dispatch Windows workflow
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          REVISION: ${{ steps.select.outputs.revision }}
+          WORKFLOW: ${{ steps.select.outputs.workflow }}
+        run: |
+          set -euo pipefail
+          gh workflow run "$WORKFLOW" \
+            --ref main \
+            -f revision="$REVISION" \
+            -f trigger_issue_number="$ISSUE_NUMBER"

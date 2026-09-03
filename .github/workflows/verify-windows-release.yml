@@ -16,6 +16,7 @@ on:
 permissions:
   actions: read
   contents: read
+  issues: write
 
 jobs:
   verify:
@@ -88,6 +89,7 @@ jobs:
           "codex_version=$($provenance.codex_version)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           "package_file=$($provenance.package.file)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           "package_sha256=$actualPackageHash" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "TRIGGER_ISSUE_NUMBER=$([string]$provenance.trigger_issue_number)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Validate canonical package layout
         shell: pwsh
@@ -172,3 +174,17 @@ jobs:
           path: ${{ runner.temp }}/windows-release-verified
           if-no-files-found: error
           retention-days: 14
+
+      - name: Close trigger issue
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const issueNumber = Number(process.env.TRIGGER_ISSUE_NUMBER || 0);
+            if (!issueNumber) return;
+            await github.rest.issues.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              state: 'closed',
+              state_reason: 'completed',
+            });
