@@ -129,6 +129,8 @@ jobs:
 
       - name: Smoke test packaged Codex
         shell: pwsh
+        env:
+          CODEX_VERSION: ${{ steps.provenance.outputs.codex_version }}
         run: |
           $ErrorActionPreference = 'Stop'
           $packageDir = Join-Path $env:RUNNER_TEMP 'codex-package'
@@ -138,10 +140,15 @@ jobs:
           $env:CODEX_HOME = $codexHome
           $env:PATH = "$(Join-Path $packageDir 'codex-path');$env:PATH"
 
-          & $codex --version
+          $versionOutput = (& $codex --version 2>&1 | Out-String).Trim()
           if ($LASTEXITCODE -ne 0) {
             throw "packaged codex --version failed with exit code $LASTEXITCODE"
           }
+          if ($versionOutput -notmatch [regex]::Escape($env:CODEX_VERSION)) {
+            throw "packaged codex --version did not report $env:CODEX_VERSION`: $versionOutput"
+          }
+          Write-Host $versionOutput
+
           & $codex --help | Out-Null
           if ($LASTEXITCODE -ne 0) {
             throw "packaged codex --help failed with exit code $LASTEXITCODE"

@@ -62,14 +62,34 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $sha = (git rev-parse HEAD).Trim()
-          $metadata = cargo metadata --format-version 1 --no-deps | ConvertFrom-Json
-          $package = $metadata.packages | Where-Object { $_.name -eq 'codex-cli' } | Select-Object -First 1
-          if (-not $package) {
-            throw 'codex-cli package was not found in cargo metadata'
+          $shortSha = $sha.Substring(0, 12)
+
+          $tagLines = @(git ls-remote --tags --refs https://github.com/openai/codex.git 'refs/tags/rust-v*')
+          if ($LASTEXITCODE -ne 0) {
+            throw "failed to list openai/codex release tags"
           }
+
+          $versions = @()
+          foreach ($line in $tagLines) {
+            $ref = ($line -split '\s+', 2)[1]
+            if ($ref -notmatch '^refs/tags/rust-v(?<version>.+)$') {
+              continue
+            }
+            try {
+              $versions += [System.Management.Automation.SemanticVersion]$Matches.version
+            } catch {
+              # Ignore non-SemVer rust-v tags.
+            }
+          }
+          if ($versions.Count -eq 0) {
+            throw 'no semantic rust-v release tags were found in openai/codex'
+          }
+
+          $upstreamVersion = [string]($versions | Sort-Object -Descending | Select-Object -First 1)
+          $version = "$upstreamVersion+hirsaeki.$shortSha"
           "sha=$sha" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          "version=$($package.version)" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          Write-Host "Resolved $env:SOURCE_REVISION_INPUT to $sha (Codex $($package.version))"
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "Resolved $env:SOURCE_REVISION_INPUT to $sha (Codex $version; upstream $upstreamVersion)"
 
       - name: Build Windows release binaries once
         shell: pwsh
